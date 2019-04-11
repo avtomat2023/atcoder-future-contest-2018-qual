@@ -1,0 +1,20 @@
+{
+  "contest": {
+    "id": "future-contest-2018-qual",
+    "title": "HACK TO THE FUTURE 2018予選",
+    "url": "https://atcoder.jp/contests/future-contest-2018-qual"
+  },
+  "tasks": [
+    {
+      "id": "future_contest_2018_qual_a",
+      "label": "A",
+      "title": "山型足し算",
+      "url": "https://atcoder.jp/contests/future-contest-2018-qual/tasks/future_contest_2018_qual_a",
+      "directory": {
+        "path": "a",
+        "testdir": "test",
+        "submit": "main.rs"
+      }
+    }
+  ]
+}
