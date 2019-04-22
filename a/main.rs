@@ -515,7 +515,8 @@ use std::fmt::{self, Display, Formatter};
 use std::time::{Instant, Duration};
 use std::cmp;
 
-const N: usize = 100;
+const BOARD_WIDTH: usize = 100;
+const MOUNTAIN_MAX_COUNT: usize = 1000;
 
 struct Mountain {
     x: usize,
@@ -529,17 +530,37 @@ impl Display for Mountain {
     }
 }
 
+impl Mountain {
+    fn heights(&self) -> Vec<((usize, usize), usize)> {
+        let mut res = Vec::with_capacity(2 * self.h * self.h - 1);
+
+        let ty = triangle(self.h, self.y, 0, BOARD_WIDTH-1);
+        let iter_y = (self.y.saturating_sub(self.h-1) ..)
+            .zip(ty.into_iter());
+        for (y, hy) in iter_y {
+            let tx = triangle(hy, self.x, 0, BOARD_WIDTH-1);
+            let iter_x = (self.x.saturating_sub(hy-1)..)
+                .zip(tx.into_iter());
+            for (x, h) in iter_x {
+                res.push(((x, y), h));
+            }
+        }
+
+        res
+    }
+}
+
 fn triangle(h: usize, center: usize, left: usize, right: usize) -> Vec<usize> {
     let mut res = Vec::with_capacity(2 * h as usize - 1);
 
-    let l_width = cmp::min(h - 1, (center - left).saturating_sub(1));
+    let l_width = cmp::min(h - 1, center - left);
     for i in (1..h).skip((h-1) - l_width) {
         res.push(i);
     }
 
     res.push(h);
 
-    let r_width = cmp::min(h - 1, (right - center).saturating_sub(1));
+    let r_width = cmp::min(h - 1, right - center);
     for i in (1..h).skip((h-1) - r_width).rev() {
         res.push(i);
     }
@@ -547,60 +568,186 @@ fn triangle(h: usize, center: usize, left: usize, right: usize) -> Vec<usize> {
     res
 }
 
-fn eval(input: &[Vec<usize>], ms: &[Mountain], time_limit: Instant) -> Option<u64> {
-    let time_limit_tightened = time_limit - Duration::from_millis(1);
-    let mut table = vec![vec![0; N]; N];
-    for m in ms {
-        let ty = triangle(m.h, m.y, 0, N-1);
-        let iter_y = (m.y.saturating_sub(m.h-1) ..)
-            .zip(ty.into_iter());
-        for (y, hy) in iter_y {
-            let tx = triangle(hy, m.x, 0, N-1);
-            let iter_x = (m.x.saturating_sub(hy-1)..)
-                .zip(tx.into_iter());
-            for (x, h) in iter_x {
-                table[y][x] += h;
-            }
-        }
+#[test]
+fn test_triangle() {
+    assert_eq!(triangle(2, 1, 0, 10), vec![1, 2, 1]);
+    assert_eq!(triangle(3, 1, 0, 10), vec![2, 3, 2, 1]);
 
-        if Instant::now() > time_limit_tightened {
-            return None;
+    assert_eq!(triangle(2, 9, 0, 10), vec![1, 2, 1]);
+    assert_eq!(triangle(3, 9, 0, 10), vec![1, 2, 3, 2]);
+}
+
+fn initial_diff(input: &[Vec<usize>], mountains: &[Mountain]) -> Vec<Vec<isize>> {
+    let mut board = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    for m in mountains {
+        for ((x, y), h) in m.heights() {
+            board[y][x] += h;
         }
     }
 
-    Some(input.iter().flatten().zip(table.into_iter().flatten())
-         .map(|(&a, b)| a.abs_diff(b))
-         .sum::<usize>() as u64)
+    board.into_iter().zip(input).map(|(row_b, row_i)| {
+        row_b.into_iter().zip(row_i).map(|(cell_b, cell_i)| {
+            cell_b as isize - *cell_i as isize
+        }).collect()
+    }).collect()
+}
+
+#[test]
+fn test_initial_diff() {
+    // input:
+    // 010...
+    // 121...
+    // 010...
+    // ......
+    let mut input = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    input[0][1] = 1;
+    input[1][0] = 1;
+    input[1][1] = 2;
+    input[1][2] = 1;
+    input[2][1] = 1;
+
+    // mountains:
+    // 0010...
+    // 0121...
+    // 0010...
+    // .......
+    let mountains = vec![Mountain { x: 2, y: 1, h: 2 }];
+
+    // diff (I = -1):
+    // 0I10...
+    // II11...
+    // 0I10...
+    // .......
+    let diff = initial_diff(&input, &mountains);
+    println!("{:?}", &diff[..5]);
+
+    assert_eq!(diff[0][0], 0);
+    assert_eq!(diff[0][1], -1);
+    assert_eq!(diff[0][2], 1);
+    assert_eq!(diff[0][3], 0);
+
+    assert_eq!(diff[1][0], -1);
+    assert_eq!(diff[1][1], -1);
+    assert_eq!(diff[1][2], 1);
+    assert_eq!(diff[1][3], 1);
+
+    assert_eq!(diff[2][0], 0);
+    assert_eq!(diff[2][1], -1);
+    assert_eq!(diff[2][2], 1);
+    assert_eq!(diff[2][3], 0);
+}
+
+fn swapping_diff(
+    diff: &[Vec<isize>], sub: &Mountain, add: &Mountain
+) -> (isize, Vec<Vec<isize>>) {
+    let mut penalty_diff = 0;
+    let mut new_diff = diff.to_vec();
+    for ((x, y), h) in sub.heights() {
+        penalty_diff += (new_diff[y][x] - h as isize).abs() - new_diff[y][x].abs();
+        new_diff[y][x] -= h as isize;
+    }
+    for ((x, y), h) in add.heights() {
+        penalty_diff += (new_diff[y][x] + h as isize).abs() - new_diff[y][x].abs();
+        new_diff[y][x] += h as isize;
+    }
+    (penalty_diff, new_diff)
+}
+
+
+#[test]
+fn test_swapping_diff() {
+    // input:
+    // 010...
+    // 121...
+    // 010...
+    // ......
+    //
+    // current mountains:
+    // 0010...
+    // 0121...
+    // 0010...
+    // .......
+    //
+    // penalty = 8
+    let mountain = Mountain { x: 2, y: 1, h: 2 };
+    let mut diff = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let diff_corner = vec![
+        vec![ 0, -1, 1, 0],
+        vec![-1, -1, 1, 1],
+        vec![ 0, -1, 1, 0],
+    ];
+    for (y, row) in diff_corner.into_iter().enumerate() {
+        for (x, value) in row.into_iter().enumerate() {
+            diff[y][x] = value;
+        }
+    }
+
+    // new mountain:
+    // 00010...
+    // 00121...
+    // 00010...
+    // ........
+    //
+    // next diff (I = -1, J = -2):
+    // 0I010...
+    // IJ021...
+    // 0I010...
+    // ........
+    //
+    // penalty = 10
+    let new_mountain = Mountain { x: 3, y: 1, h: 2 };
+    let (penalty_diff, next_diff) = swapping_diff(&diff, &mountain, &new_mountain);
+    let mut next_diff_expected = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let next_diff_corner = vec![
+        vec![ 0, -1, 0, 1, 0],
+        vec![-1, -2, 0, 2, 1],
+        vec![ 0, -1, 0, 1, 0],
+    ];
+    for (y, row) in next_diff_corner.into_iter().enumerate() {
+        for (x, value) in row.into_iter().enumerate() {
+            next_diff_expected[y][x] = value;
+        }
+    }
+    assert_eq!(penalty_diff, 2);
+    assert_eq!(next_diff, next_diff_expected);
 }
 
 fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
-    let time_limit_tightend: Instant = time_limit - Duration::from_millis(1);
+    let time_limit_tightend: Instant = time_limit - Duration::from_millis(10);
     let mut rng = Xorshift::new();
 
-    let mut res: Vec<Mountain> = (0..1000).map(|_| gen_random(&mut rng))
+    let mut mountains: Vec<Mountain> = (0..MOUNTAIN_MAX_COUNT)
+        .map(|_| gen_random(&mut rng))
         .collect();
-    let mut score = eval(input, &res, time_limit_tightend).unwrap();
+    let mut diff = initial_diff(input, &mountains);
+
+    let mut loop_count = 0;
+
     loop {
-        let new_ans: Vec<Mountain> = (0..1000).map(|_| gen_random(&mut rng))
-            .collect();
-        match eval(input, &new_ans, time_limit_tightend) {
-            Some(new_score) => {
-                if new_score < score {
-                    res = new_ans;
-                    score = new_score;
-                }
-            },
-            None => break
+        if Instant::now() > time_limit_tightend {
+            break;
         }
+
+        let i = rng.rand() as usize % MOUNTAIN_MAX_COUNT;
+        let mountain = gen_random(&mut rng);
+        let (penalty_diff, new_diff) = swapping_diff(&diff, &mountains[i], &mountain);
+        if penalty_diff < 0 {
+            mountains[i] = mountain;
+            diff = new_diff;
+        }
+
+        loop_count += 1;
     }
-    res
+
+    dbg!(loop_count);
+    mountains
 }
 
 fn gen_random(rng: &mut Xorshift) -> Mountain {
     Mountain {
-        x: rng.rand() as usize % N,
-        y: rng.rand() as usize % N,
-        h: rng.rand() as usize % N + 1
+        x: rng.rand() as usize % BOARD_WIDTH,
+        y: rng.rand() as usize % BOARD_WIDTH,
+        h: rng.rand() as usize % BOARD_WIDTH + 1
     }
 }
 
@@ -608,7 +755,7 @@ fn main() {
     let start = Instant::now();
 
     let input = readx::<Vec<usize>>();
-    let ans = solve(&input, start + Duration::from_millis(5950));
+    let ans = solve(&input, start + Duration::from_millis(5995));
     with_stdout(|mut f| {
         writeln!(f, "{}", ans.len()).unwrap();
         for m in ans {
