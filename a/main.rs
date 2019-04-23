@@ -473,6 +473,8 @@ macro_rules! dbg {
     }};
 }
 
+use std::cmp::min;
+
 #[derive(Debug)]
 pub struct Xorshift {
     seed: u64,
@@ -516,8 +518,19 @@ use std::time::{Instant, Duration};
 use std::cmp;
 
 const BOARD_WIDTH: usize = 100;
+const MAX_HEIGHT: usize = 100;
 const MOUNTAIN_MAX_COUNT: usize = 1000;
 
+#[derive(Clone, Copy, Debug)]
+enum PerturbationVar { X, Y, H }
+
+#[derive(Clone, Copy, Debug)]
+struct Perturbation {
+    var: PerturbationVar,
+    delta: isize
+}
+
+#[derive(Clone, Debug)]
 struct Mountain {
     x: usize,
     y: usize,
@@ -530,7 +543,25 @@ impl Display for Mountain {
     }
 }
 
+fn perturb_num(pos: usize, max: usize, rng: &mut Xorshift) -> isize {
+    if pos == 0 {
+        1
+    } else if pos == max {
+        -1
+    } else {
+        (rng.rand() % 2) as isize * 2 - 1
+    }
+}
+
 impl Mountain {
+    fn random(rng: &mut Xorshift) -> Mountain {
+        Mountain {
+            x: rng.rand() as usize % BOARD_WIDTH,
+            y: rng.rand() as usize % BOARD_WIDTH,
+            h: rng.rand() as usize % MAX_HEIGHT + 1
+        }
+    }
+
     fn heights(&self) -> Vec<((usize, usize), usize)> {
         let mut res = Vec::with_capacity(2 * self.h * self.h - 1);
 
@@ -547,6 +578,31 @@ impl Mountain {
         }
 
         res
+    }
+
+    fn perturbation(&self, rng: &mut Xorshift) -> Perturbation {
+        match rng.rand() % 3 {
+            0 => Perturbation {
+                var: PerturbationVar::X,
+                delta: perturb_num(self.x, BOARD_WIDTH - 1, rng)
+            },
+            1 => Perturbation {
+                var: PerturbationVar::Y,
+                delta: perturb_num(self.y, BOARD_WIDTH - 1, rng)
+            },
+            _ => Perturbation {
+                var: PerturbationVar::H,
+                delta: perturb_num(self.h, BOARD_WIDTH, rng)
+            }
+        }
+    }
+
+    fn perturb(&mut self, p: Perturbation) {
+        match p.var {
+            PerturbationVar::X => self.x = ((self.x as isize) + p.delta) as usize,
+            PerturbationVar::Y => self.y = ((self.y as isize) + p.delta) as usize,
+            PerturbationVar::H => self.h = ((self.h as isize) + p.delta) as usize
+        }
     }
 }
 
@@ -568,6 +624,7 @@ fn triangle(h: usize, center: usize, left: usize, right: usize) -> Vec<usize> {
     res
 }
 
+#[cfg(test)]
 #[test]
 fn test_triangle() {
     assert_eq!(triangle(2, 1, 0, 10), vec![1, 2, 1]);
@@ -592,6 +649,7 @@ fn initial_diff(input: &[Vec<usize>], mountains: &[Mountain]) -> Vec<Vec<isize>>
     }).collect()
 }
 
+#[cfg(test)]
 #[test]
 fn test_initial_diff() {
     // input:
@@ -637,25 +695,816 @@ fn test_initial_diff() {
     assert_eq!(diff[2][3], 0);
 }
 
-fn swapping_diff(
-    diff: &[Vec<isize>], sub: &Mountain, add: &Mountain
-) -> (isize, Vec<Vec<isize>>) {
-    let mut penalty_diff = 0;
-    let mut new_diff = diff.to_vec();
-    for ((x, y), h) in sub.heights() {
-        penalty_diff += (new_diff[y][x] - h as isize).abs() - new_diff[y][x].abs();
-        new_diff[y][x] -= h as isize;
+fn for_triangle_l<F>(center: (usize, usize), height: usize, mut f: F)
+where
+    F: FnMut((usize, usize))
+{
+    if height == 0 {
+        return;
     }
-    for ((x, y), h) in add.heights() {
-        penalty_diff += (new_diff[y][x] + h as isize).abs() - new_diff[y][x].abs();
-        new_diff[y][x] += h as isize;
+
+    let (cx, cy) = center;
+    // Make y outer loop variable to leverage memory locality
+    for y in cy.saturating_sub(height - 1) .. min(BOARD_WIDTH, cy + height) {
+        let dy = cy.abs_diff(y);
+        let begin = cx.saturating_sub((height-1) - dy);
+        for x in begin..cx+1 {
+            f((x, y));
+        }
     }
-    (penalty_diff, new_diff)
+}
+
+#[cfg(test)]
+#[test]
+fn test_for_triangle_l() {
+    const W: usize = BOARD_WIDTH;
+
+    // ......
+    // ...x..
+    // ..xx..
+    // .xxc..
+    // ..xx..
+    // ...x..
+    // ......
+    let mut b1 = Vec::new();
+    for_triangle_l((3, 3), 3, |p| b1.push(p));
+    assert_eq!(b1, vec![
+                      (3,1),
+               (2,2), (3,2),
+        (1,3), (2,3), (3,3),
+               (2,4), (3,4),
+                      (3,5)
+    ]);
+
+    // xxx..
+    // xxc..
+    // xxx..
+    // .xx..
+    // ..x..
+    // .....
+    let mut b2 = Vec::new();
+    for_triangle_l((2, 1), 4, |p| b2.push(p));
+    assert_eq!(b2, vec![
+        (0,0), (1,0), (2,0),
+        (0,1), (1,1), (2,1),
+        (0,2), (1,2), (2,2),
+               (1,3), (2,3),
+                      (2,4)
+    ]);
+
+    // .....
+    // ..x..
+    // .xx..
+    // xxx..
+    // xxc..
+    let mut b3 = Vec::new();
+    for_triangle_l((2, W-1), 4, |p| b3.push(p));
+    assert_eq!(b3, vec![
+                          (2,W-4),
+                 (1,W-3), (2,W-3),
+        (0,W-2), (1,W-2), (2,W-2),
+        (0,W-1), (1,W-1), (2,W-1),
+    ]);
+}
+
+fn for_triangle_r<F>(center: (usize, usize), height: usize, mut f: F)
+where
+    F: FnMut((usize, usize))
+{
+    if height == 0 {
+        return;
+    }
+
+    let (cx, cy) = center;
+    // Make y outer loop variable to leverage memory locality
+    for y in cy.saturating_sub(height - 1) .. min(BOARD_WIDTH, cy + height) {
+        let dy = cy.abs_diff(y);
+        let end = min(BOARD_WIDTH, cx + height - dy);
+        for x in cx..end {
+            f((x, y));
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_for_triangle_r() {
+    const W: usize = BOARD_WIDTH;
+
+    // ......
+    // .x....
+    // .xx...
+    // .cxx..
+    // .xx...
+    // .x....
+    // ......
+    let mut b1 = Vec::new();
+    for_triangle_r((1, 3), 3, |p| b1.push(p));
+    assert_eq!(b1, vec![
+        (1,1),
+        (1,2), (2,2),
+        (1,3), (2,3), (3,3),
+        (1,4), (2,4),
+        (1,5)
+    ]);
+
+    // ..xxx
+    // ..cxx
+    // ..xxx
+    // ..xx.
+    // ..x..
+    // .....
+    let mut b2 = Vec::new();
+    for_triangle_r((W-3, 1), 4, |p| b2.push(p));
+    assert_eq!(b2, vec![
+        (W-3,0), (W-2,0), (W-1,0),
+        (W-3,1), (W-2,1), (W-1,1),
+        (W-3,2), (W-2,2), (W-1,2),
+        (W-3,3), (W-2,3),
+        (W-3,4)
+    ]);
+
+    // .....
+    // ..x..
+    // ..xx.
+    // ..xxx
+    // ..cxx
+    let mut b3 = Vec::new();
+    for_triangle_r((W-3, W-1), 4, |p| b3.push(p));
+    assert_eq!(b3, vec![
+        (W-3,W-4),
+        (W-3,W-3), (W-2,W-3),
+        (W-3,W-2), (W-2,W-2), (W-1,W-2),
+        (W-3,W-1), (W-2,W-1), (W-1,W-1),
+    ]);
 }
 
 
+fn for_triangle_u<F>(center: (usize, usize), height: usize, mut f: F)
+where
+    F: FnMut((usize, usize))
+{
+    if height == 0 {
+        return;
+    }
+
+    let (cx, cy) = center;
+    for y in cy.saturating_sub(height - 1) .. cy+1 {
+        let dy = cy - y;
+        let begin = cx.saturating_sub((height-1) - dy);
+        let end = min(BOARD_WIDTH, cx + height - dy);
+        for x in begin..end {
+            f((x, y));
+        }
+    }
+}
+
+#[cfg(test)]
 #[test]
-fn test_swapping_diff() {
+fn test_for_triangle_u() {
+    const W: usize = BOARD_WIDTH;
+
+    // ........
+    // ...x....
+    // ..xxx...
+    // .xxcxx..
+    // ........
+    let mut b1 = Vec::new();
+    for_triangle_u((3, 3), 3, |p| b1.push(p));
+    assert_eq!(b1, vec![
+                      (3,1),
+               (2,2), (3,2), (4,2),
+        (1,3), (2,3), (3,3), (4,3), (5,3),
+    ]);
+
+    // xxx...
+    // xxxx..
+    // xcxxx.
+    // ......
+    let mut b2 = Vec::new();
+    for_triangle_u((1, 2), 4, |p| b2.push(p));
+    assert_eq!(b2, vec![
+        (0,0), (1,0), (2,0),
+        (0,1), (1,1), (2,1), (3,1),
+        (0,2), (1,2), (2,2), (3,2), (4,2)
+    ]);
+
+    // ..xxx
+    // .xxxx
+    // xxxcx
+    // .....
+    let mut b3 = Vec::new();
+    for_triangle_u((W-2, 2), 4, |p| b3.push(p));
+    assert_eq!(b3, vec![
+                          (W-3,0), (W-2,0), (W-1,0),
+                 (W-4,1), (W-3,1), (W-2,1), (W-1,1),
+        (W-5,2), (W-4,2), (W-3,2), (W-2,2), (W-1,2),
+    ]);
+}
+
+fn for_triangle_d<F>(center: (usize, usize), height: usize, mut f: F)
+where
+    F: FnMut((usize, usize))
+{
+    if height == 0 {
+        return;
+    }
+
+    let (cx, cy) = center;
+    for y in cy .. min(BOARD_WIDTH, cy + height) {
+        let dy = y - cy;
+        let begin = cx.saturating_sub((height-1) - dy);
+        let end = min(BOARD_WIDTH, cx + height - dy);
+        for x in begin..end {
+            f((x, y));
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_for_triangle_d() {
+    const W: usize = BOARD_WIDTH;
+
+    // ........
+    // .xxcxx..
+    // ..xxx...
+    // ...x....
+    // ........
+    let mut b1 = Vec::new();
+    for_triangle_d((3, 1), 3, |p| b1.push(p));
+    assert_eq!(b1, vec![
+        (1,1), (2,1), (3,1), (4,1), (5,1),
+               (2,2), (3,2), (4,2),
+                      (3,3),
+    ]);
+
+    // ......
+    // xcxxx.
+    // xxxx..
+    // xxx...
+    let mut b2 = Vec::new();
+    for_triangle_d((1, W-3), 4, |p| b2.push(p));
+    assert_eq!(b2, vec![
+        (0,W-3), (1,W-3), (2,W-3), (3,W-3), (4,W-3),
+        (0,W-2), (1,W-2), (2,W-2), (3,W-2),
+        (0,W-1), (1,W-1), (2,W-1)
+    ]);
+
+    // .....
+    // .xxxc
+    // ..xxx
+    // ...xx
+    let mut b3 = Vec::new();
+    for_triangle_d((W-1, W-3), 4, |p| b3.push(p));
+    assert_eq!(b3, vec![
+        (W-4,W-3), (W-3,W-3), (W-2,W-3), (W-1,W-3),
+                   (W-3,W-2), (W-2,W-2), (W-1,W-2),
+                              (W-2,W-1), (W-1,W-1)
+    ]);
+}
+
+fn for_diamond<F>(center: (usize, usize), height: usize, mut f: F)
+where
+    F: FnMut((usize, usize))
+{
+    if height == 0 {
+        return;
+    }
+
+    let (cx, cy) = center;
+    for y in cy.saturating_sub(height - 1) .. cy+1 {
+        let dy = cy - y;
+        let begin = cx.saturating_sub((height-1) - dy);
+        let end = min(BOARD_WIDTH, cx + height - dy);
+        for x in begin..end {
+            f((x, y));
+        }
+    }
+    for y in cy+1 .. min(BOARD_WIDTH, cy + height) {
+        let dy = y - cy;
+        let begin = cx.saturating_sub((height-1) - dy);
+        let end = min(BOARD_WIDTH, cx + height - dy);
+        for x in begin..end {
+            f((x, y));
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_for_diamond() {
+    let mut d1 = Vec::new();
+    for_diamond((1, 1), 2, |p| d1.push(p));
+    assert_eq!(d1, vec![(1,0), (0,1), (1,1), (2,1), (1,2)]);
+
+    let mut d2 = Vec::new();
+    let m = BOARD_WIDTH - 1;
+    for_diamond((m-1, 1), 3, |p| d2.push(p));
+    assert_eq!(d2, vec![
+        (m-2,0), (m-1,0), (m,0),
+        (m-3,1), (m-2,1), (m-1,1), (m,1),
+        (m-2,2), (m-1,2), (m,2),
+        (m-1,3)
+    ]);
+}
+
+/*
+#[derive(Clone, Copy)]
+enum Direction { U, R, D, L }
+
+fn for_bracket_ul<F: FnMut((usize, usize))>(
+    center: (usize, usize), height: usize, f: &mut F
+) {
+    debug_assert!(height > 0);
+    let (cx, cy) = center;
+    let d = height - 1;
+    let begin = if cx >= d { 0 } else { d - cx };
+    let end = if cy >= d { d } else { cy + 1 };
+    for i in begin..end {
+        f((cx - (d-i), cy - i));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_for_bracket_ul() {
+    // .....
+    // ...x.
+    // ..x..
+    // .x..c
+    let mut b1 = Vec::new();
+    for_bracket_ul((4, 3), 4, &mut |p| b1.push(p));
+    assert_eq!(b1, vec![(1,3), (2,2), (3,1)]);
+
+    // .x.
+    // x..
+    // ...
+    // ..c
+    let mut b2 = Vec::new();
+    for_bracket_ul((2, 3), 5, &mut |p| b2.push(p));
+    assert_eq!(b2, vec![(0,1), (1,0)]);
+}
+
+fn for_bracket_ur<F: FnMut((usize, usize))>(
+    center: (usize, usize), height: usize, f: &mut F
+) {
+    debug_assert!(height > 0);
+    let (cx, cy) = center;
+    let d = height - 1;
+    let begin = if cy >= d { 0 } else { d - cy };
+    let end = if cx + d <= BOARD_WIDTH { d } else { BOARD_WIDTH - cx };
+    for i in begin..end {
+        f((cx + i, cy - (d-i)))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_for_bracket_ur() {
+    // .....
+    // .x...
+    // ..x..
+    // ...x.
+    // .c...
+    let mut b1 = Vec::new();
+    for_bracket_ur((1, 4), 4, &mut |p| b1.push(p));
+    assert_eq!(b1, vec![(1,1), (2,2), (3,3)]);
+
+    // .x.
+    // ..x
+    // ...
+    // c..
+    let m = BOARD_WIDTH - 1;
+    let mut b2 = Vec::new();
+    for_bracket_ur((m-2, 3), 5, &mut |p| b2.push(p));
+    assert_eq!(b2, vec![(m-1,0), (m,1)]);
+}
+
+fn for_bracket_dr<F: FnMut((usize, usize))>(
+    center: (usize, usize), height: usize, f: &mut F
+) {
+    debug_assert!(height > 0);
+    let (cx, cy) = center;
+    let d = height - 1;
+    let begin = if cx + d <= BOARD_WIDTH-1 { 0 } else { cx + d - (BOARD_WIDTH-1) };
+    let end = if cy + d <= BOARD_WIDTH { d } else { BOARD_WIDTH - cy };
+    for i in begin..end {
+        f((cx+d - i, cy + i))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_for_bracket_dr() {
+    // c..x.
+    // ..x..
+    // .x...
+    // .....
+    let mut b1 = Vec::new();
+    for_bracket_dr((0, 0), 4, &mut |p| b1.push(p));
+    assert_eq!(b1, vec![(3,0), (2,1), (1,2)]);
+
+    // c..
+    // ...
+    // ..x
+    // .x.
+    let m = BOARD_WIDTH - 1;
+    let mut b2 = Vec::new();
+    for_bracket_dr((m-2, m-3), 5, &mut |p| b2.push(p));
+    assert_eq!(b2, vec![(m,m-1), (m-1,m)]);
+}
+
+
+fn for_bracket_dl<F: FnMut((usize, usize))>(
+    center: (usize, usize), height: usize, f: &mut F
+) {
+    debug_assert!(height > 0);
+    let (cx, cy) = center;
+    let d = height - 1;
+    let begin = if cx >= d { 0 } else { d - cx };
+    let end = if cy + d <= BOARD_WIDTH { d } else { BOARD_WIDTH - cy };
+    for i in begin..end {
+        f((cx - (d-i), cy + i))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_for_bracket_dl() {
+    // .....
+    // .x..c
+    // ..x..
+    // ...x.
+    // .....
+    let mut b1 = Vec::new();
+    for_bracket_dl((4, 1), 4, &mut |p| b1.push(p));
+    assert_eq!(b1, vec![(1,1), (2,2), (3,3)]);
+
+    // ..c
+    // ...
+    // x..
+    // .x.
+    let m = BOARD_WIDTH - 1;
+    let mut b2 = Vec::new();
+    for_bracket_dl((2, m-3), 5, &mut |p| b2.push(p));
+    assert_eq!(b2, vec![(0,m-1), (1,m)]);
+}
+
+
+fn for_bracket<F: FnMut((usize, usize))>(
+    center: (usize, usize), height: usize, d: Direction, mut f: F
+) {
+    if height == 0 {
+        return;
+    }
+
+    let (cx, cy) = center;
+    match d {
+        Direction::U => {
+            for_bracket_ul(center, height, &mut f);
+            for_bracket_ur(center, height, &mut f);
+            if cx + height - 1 < BOARD_WIDTH {
+                f((cx + height - 1, cy));
+            }
+        },
+        Direction::R => {
+            for_bracket_ur(center, height, &mut f);
+            for_bracket_dr(center, height, &mut f);
+            if cy + height - 1 < BOARD_WIDTH {
+                f((cx, cy + height - 1));
+            }
+        },
+        Direction::D => {
+            for_bracket_dr(center, height, &mut f);
+            for_bracket_dl(center, height, &mut f);
+            if cx >= height - 1 {
+                f((cx - (height - 1), cy));
+            }
+        },
+        Direction::L => {
+            for_bracket_dl(center, height, &mut f);
+            for_bracket_ul(center, height, &mut f);
+            if cy >= height - 1 {
+                f((cx, cy - (height - 1)));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_for_bracket() {
+    let mut d1 = Vec::new();
+    for_bracket((1, 1), 2, Direction::U, |p| d1.push(p));
+    assert_eq!(d1, vec![(0,1), (1,0), (2,1)]);
+
+    let mut d2 = Vec::new();
+    let m = BOARD_WIDTH - 1;
+    for_bracket((m-1, 1), 3, Direction::R, |p| d2.push(p));
+    assert_eq!(d2, vec![(m,0), (m,2), (m-1,3)]);
+}
+*/
+
+fn perturbing_diff(diff: &[Vec<isize>], m: &Mountain, p: Perturbation) -> isize {
+    let mut penalty_diff = 0;
+    match p.var {
+        PerturbationVar::X => {
+            let ((dx_l, dx_r), (delta_l, delta_r)) = if p.delta > 0 {
+                ((0, 1), (-1, 1))
+            } else {
+                ((-1, 0), (1, -1))
+            };
+            let x_l = (m.x as isize + dx_l) as usize;
+            let x_r = (m.x as isize + dx_r) as usize;
+            for_triangle_l((x_l, m.y), m.h, |(x, y)| {
+                penalty_diff += delta_l * if diff[y][x] >= 0 { 1 } else { -1 };
+            });
+            for_triangle_r((x_r, m.y), m.h, |(x, y)| {
+                penalty_diff += delta_r * if diff[y][x] >= 0 { 1 } else { -1 };
+            });
+        },
+        PerturbationVar::Y => {
+            let ((dy_u, dy_d), (delta_u, delta_d)) = if p.delta > 0 {
+                ((0, 1), (-1, 1))
+            } else {
+                ((-1, 0), (1, -1))
+            };
+            let y_u = (m.y as isize + dy_u) as usize;
+            let y_d = (m.y as isize + dy_d) as usize;
+            for_triangle_u((m.x, y_u), m.h, |(x, y)| {
+                penalty_diff += delta_u * if diff[y][x] >= 0 { 1 } else { -1 };
+            });
+            for_triangle_d((m.x, y_d), m.h, |(x, y)| {
+                penalty_diff += delta_d * if diff[y][x] >= 0 { 1 } else { -1 };
+            });
+        },
+        PerturbationVar::H => {
+            if p.delta > 0 {
+                for_diamond((m.x, m.y), m.h + 1, |(x, y)| {
+                    penalty_diff += if diff[y][x] >= 0 { 1 } else { -1 };
+                });
+            } else {
+                for_diamond((m.x, m.y), m.h, |(x, y)| {
+                    penalty_diff += if diff[y][x] <= 0 { 1 } else { -1 };
+                });
+            }
+        }
+    }
+    penalty_diff
+}
+
+#[cfg(test)]
+fn perturbing_diff_test_config() -> (Vec<Vec<isize>>, Mountain) {
+    // input:
+    // 010...
+    // 121...
+    // 010...
+    // ......
+    //
+    // current mountains:
+    // 0010...
+    // 0121...
+    // 0010...
+    // .......
+    //
+    // diff:
+    // 0I10...
+    // II11...
+    // 0I10...
+    // .......
+    //
+    // penalty = 8
+    let mountain = Mountain { x: 2, y: 1, h: 2 };
+    let mut diff = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let diff_corner = vec![
+        vec![ 0, -1, 1, 0],
+        vec![-1, -1, 1, 1],
+        vec![ 0, -1, 1, 0],
+    ];
+    for (y, row) in diff_corner.into_iter().enumerate() {
+        for (x, value) in row.into_iter().enumerate() {
+            diff[y][x] = value;
+        }
+    }
+    (diff, mountain)
+}
+
+#[cfg(test)]
+#[test]
+fn test_perturbing_diff_increase_x() {
+    let (diff, mountain) = perturbing_diff_test_config();
+    // input:
+    // 010...
+    // 121...
+    // 010...
+    // ......
+    //
+    // perturbation = (X, +1)
+    // perturbed mountain:
+    // 00010...
+    // 00121...
+    // 00010...
+    // ........
+    //
+    // next diff (I = -1, J = -2):
+    // 0I010...
+    // IJ021...
+    // 0I010...
+    // ........
+    //
+    // penalty = 10
+    let p = Perturbation { var: PerturbationVar::X, delta: 1 };
+    assert_eq!(perturbing_diff(&diff, &mountain, p), 2);
+}
+
+#[cfg(test)]
+#[test]
+fn test_perturbing_diff_decrease_x() {
+    let (diff, mountain) = perturbing_diff_test_config();
+    // input:
+    // 010...
+    // 121...
+    // 010...
+    // ......
+    //
+    // perturbation = (X, -1)
+    // perturbed mountain:
+    // 010...
+    // 121...
+    // 010...
+    // ......
+    //
+    // penalty = 0
+    let p = Perturbation { var: PerturbationVar::X, delta: -1 };
+    assert_eq!(perturbing_diff(&diff, &mountain, p), -8);
+}
+
+#[cfg(test)]
+#[test]
+fn test_perturbing_diff_increase_y() {
+    let (diff, mountain) = perturbing_diff_test_config();
+    // input:
+    // 010...
+    // 121...
+    // 010...
+    // ......
+    //
+    // perturbation = (Y, +1)
+    // perturbed mountain:
+    // 0000...
+    // 0010...
+    // 0121...
+    // 0010...
+    // .......
+    //
+    // next diff (I = -1, J = -2):
+    // 0I000...
+    // IJ000...
+    // 00210...
+    // 00100...
+    // ........
+    // penalty = 8
+    let p = Perturbation { var: PerturbationVar::Y, delta: 1 };
+    assert_eq!(perturbing_diff(&diff, &mountain, p), 0);
+}
+
+#[cfg(test)]
+#[test]
+fn test_perturbing_diff_decrease_y() {
+    let (diff, mountain) = perturbing_diff_test_config();
+    // input:
+    // 010...
+    // 121...
+    // 010...
+    // ......
+    //
+    // perturbation = (Y, +1)
+    // perturbed mountain:
+    // 0121...
+    // 0010...
+    // .......
+    //
+    // next diff (I = -1, J = -2):
+    // 00210...
+    // IJ000...
+    // 0I000...
+    // 00000...
+    // ........
+    //
+    // penalty = 7
+    let p = Perturbation { var: PerturbationVar::Y, delta: -1 };
+    assert_eq!(perturbing_diff(&diff, &mountain, p), -1);
+}
+
+#[cfg(test)]
+#[test]
+fn test_perturbing_diff_increase_h() {
+    let (diff, mountain) = perturbing_diff_test_config();
+    // input:
+    // 01000..
+    // 12100..
+    // 01000..
+    // 00000..
+    // .......
+    //
+    // perturbation = (Y, +1)
+    // perturbed mountain:
+    // 01210..
+    // 12321..
+    // 01210..
+    // 00100..
+    // .......
+    //
+    // next diff (I = -1, J = -2):
+    // 00210...
+    // 00221...
+    // 00210...
+    // 00100...
+    // ........
+    //
+    // penalty = 12
+    let p = Perturbation { var: PerturbationVar::H, delta: 1 };
+    assert_eq!(perturbing_diff(&diff, &mountain, p), 4);
+}
+
+#[cfg(test)]
+#[test]
+fn test_perturbing_diff_decrease_h() {
+    let (diff, mountain) = perturbing_diff_test_config();
+    // input:
+    // 010..
+    // 121..
+    // 010..
+    // ......
+    //
+    // perturbation = (Y, +1)
+    // perturbed mountain:
+    // 000..
+    // 001..
+    // 000..
+    // .....
+    //
+    // next diff (I = -1, J = -2):
+    // 0I0..
+    // IJ0..
+    // 0I0..
+    // .....
+    //
+    // penalty = 5
+    let p = Perturbation { var: PerturbationVar::H, delta: -1 };
+    assert_eq!(perturbing_diff(&diff, &mountain, p), -3);
+}
+
+fn update_diff(diff: &mut [Vec<isize>], m: &Mountain, p: Perturbation) {
+    match p.var {
+        PerturbationVar::X => {
+            let ((dx_l, dx_r), (delta_l, delta_r)) = if p.delta > 0 {
+                ((0, 1), (-1, 1))
+            } else {
+                ((-1, 0), (1, -1))
+            };
+            let x_l = (m.x as isize + dx_l) as usize;
+            let x_r = (m.x as isize + dx_r) as usize;
+            for_triangle_l((x_l, m.y), m.h, |(x, y)| {
+                diff[y][x] += delta_l;
+            });
+            for_triangle_r((x_r, m.y), m.h, |(x, y)| {
+                diff[y][x] += delta_r;
+            });
+        },
+        PerturbationVar::Y => {
+            let ((dy_u, dy_d), (delta_u, delta_d)) = if p.delta > 0 {
+                ((0, 1), (-1, 1))
+            } else {
+                ((-1, 0), (1, -1))
+            };
+            let y_u = (m.y as isize + dy_u) as usize;
+            let y_d = (m.y as isize + dy_d) as usize;
+            for_triangle_u((m.x, y_u), m.h, |(x, y)| {
+                diff[y][x] += delta_u;
+            });
+            for_triangle_d((m.x, y_d), m.h, |(x, y)| {
+                diff[y][x] += delta_d;
+            });
+        },
+        PerturbationVar::H => {
+            if p.delta > 0 {
+                for_diamond((m.x, m.y), m.h + 1, |(x, y)| {
+                    diff[y][x] += 1;
+                });
+            } else {
+                for_diamond((m.x, m.y), m.h, |(x, y)| {
+                    diff[y][x] -= 1;
+                });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_update_diff() {
     // input:
     // 010...
     // 121...
@@ -681,8 +1530,10 @@ fn test_swapping_diff() {
             diff[y][x] = value;
         }
     }
+    let diff = diff; // make diff immutable
 
-    // new mountain:
+    // perturbation = (X, +1)
+    // perturbed mountain:
     // 00010...
     // 00121...
     // 00010...
@@ -695,21 +1546,21 @@ fn test_swapping_diff() {
     // ........
     //
     // penalty = 10
-    let new_mountain = Mountain { x: 3, y: 1, h: 2 };
-    let (penalty_diff, next_diff) = swapping_diff(&diff, &mountain, &new_mountain);
-    let mut next_diff_expected = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
-    let next_diff_corner = vec![
+    let p1 = Perturbation { var: PerturbationVar::X, delta: 1 };
+    let mut diff1 = diff.clone();
+    update_diff(&mut diff1, &mountain, p1);
+    let mut diff1_expected = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let diff1_corner = vec![
         vec![ 0, -1, 0, 1, 0],
         vec![-1, -2, 0, 2, 1],
         vec![ 0, -1, 0, 1, 0],
     ];
-    for (y, row) in next_diff_corner.into_iter().enumerate() {
+    for (y, row) in diff1_corner.into_iter().enumerate() {
         for (x, value) in row.into_iter().enumerate() {
-            next_diff_expected[y][x] = value;
+            diff1_expected[y][x] = value;
         }
     }
-    assert_eq!(penalty_diff, 2);
-    assert_eq!(next_diff, next_diff_expected);
+    assert_eq!(diff1, diff1_expected);
 }
 
 fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
@@ -717,7 +1568,7 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
     let mut rng = Xorshift::new();
 
     let mut mountains: Vec<Mountain> = (0..MOUNTAIN_MAX_COUNT)
-        .map(|_| gen_random(&mut rng))
+        .map(|_| Mountain::random(&mut rng))
         .collect();
     let mut diff = initial_diff(input, &mountains);
 
@@ -729,26 +1580,18 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
         }
 
         let i = rng.rand() as usize % MOUNTAIN_MAX_COUNT;
-        let mountain = gen_random(&mut rng);
-        let (penalty_diff, new_diff) = swapping_diff(&diff, &mountains[i], &mountain);
-        if penalty_diff < 0 {
-            mountains[i] = mountain;
-            diff = new_diff;
+        let perturbation = mountains[i].perturbation(&mut rng);
+
+        if perturbing_diff(&diff, &mountains[i], perturbation) < 0 {
+            update_diff(&mut diff, &mountains[i], perturbation);
+            mountains[i].perturb(perturbation);
         }
 
         loop_count += 1;
     }
 
     dbg!(loop_count);
-    mountains
-}
-
-fn gen_random(rng: &mut Xorshift) -> Mountain {
-    Mountain {
-        x: rng.rand() as usize % BOARD_WIDTH,
-        y: rng.rand() as usize % BOARD_WIDTH,
-        h: rng.rand() as usize % BOARD_WIDTH + 1
-    }
+    mountains.into_iter().filter(|m| m.h > 0).collect()
 }
 
 fn main() {
