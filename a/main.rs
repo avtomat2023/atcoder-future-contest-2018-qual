@@ -588,7 +588,7 @@ impl<T> Board<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Mountain {
     x: usize,
     y: usize,
@@ -599,6 +599,12 @@ impl Display for Mountain {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{} {} {}", self.x, self.y, self.h)
     }
+}
+
+fn perturb_num(pos: usize, range: usize, max: usize, rng: &mut Xorshift) -> usize {
+    let l = pos.saturating_sub(range);
+    let r = min(pos + range, max);
+    l + rng.rand() as usize % (r-l+1)
 }
 
 impl Mountain {
@@ -628,6 +634,15 @@ impl Mountain {
             for (x, h) in iter_x {
                 f((x, y), h);
             }
+        }
+    }
+
+    fn perturb(&self, rng: &mut Xorshift) -> Mountain {
+        const RANGE: usize = 1;
+        Mountain {
+            x: perturb_num(self.x, RANGE, BOARD_WIDTH - 1, rng),
+            y: perturb_num(self.y, RANGE, BOARD_WIDTH - 1, rng),
+            h: perturb_num(self.h, RANGE, MAX_HEIGHT, rng)
         }
     }
 }
@@ -854,7 +869,7 @@ fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
         }
 
         let i = rng.rand() as usize % MOUNTAIN_MAX_COUNT;
-        let mountain = Mountain::random(&mut rng);
+        let mountain = mountains[i].perturb(&mut rng);
         if penalty_by_swap(&diff, &mountains[i], &mountain) < 0 {
             update_diff(&mut diff, &mountains[i], &mountain);
             mountains[i] = mountain;
