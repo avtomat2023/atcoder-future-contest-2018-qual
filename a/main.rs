@@ -537,13 +537,14 @@ impl Mountain {
         Mountain {
             x: rng.rand() as usize % BOARD_WIDTH,
             y: rng.rand() as usize % BOARD_WIDTH,
-            h: rng.rand() as usize % MAX_HEIGHT + 1
+            h: rng.rand() as usize % MAX_HEIGHT,
         }
     }
 
-    fn heights(&self) -> Vec<((usize, usize), usize)> {
-        let mut res = Vec::with_capacity(2 * self.h * self.h - 1);
-
+    fn for_each_cell<F>(&self, mut f: F)
+    where
+        F: FnMut((usize, usize), usize)
+    {
         let ty = triangle(self.h, self.y, 0, BOARD_WIDTH-1);
         let iter_y = (self.y.saturating_sub(self.h-1) ..)
             .zip(ty.into_iter());
@@ -552,11 +553,9 @@ impl Mountain {
             let iter_x = (self.x.saturating_sub(hy-1)..)
                 .zip(tx.into_iter());
             for (x, h) in iter_x {
-                res.push(((x, y), h));
+                f((x, y), h);
             }
         }
-
-        res
     }
 }
 
@@ -591,9 +590,9 @@ fn test_triangle() {
 fn initial_diff(input: &[Vec<usize>], mountains: &[Mountain]) -> Vec<Vec<isize>> {
     let mut board = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
     for m in mountains {
-        for ((x, y), h) in m.heights() {
+        m.for_each_cell(|(x, y), h| {
             board[y][x] += h;
-        }
+        });
     }
 
     board.into_iter().zip(input).map(|(row_b, row_i)| {
@@ -649,23 +648,116 @@ fn test_initial_diff() {
     assert_eq!(diff[2][3], 0);
 }
 
-fn swapping_diff(
-    diff: &[Vec<isize>], sub: &Mountain, add: &Mountain
-) -> (isize, Vec<Vec<isize>>) {
-    let mut penalty_diff = 0;
-    let mut new_diff = diff.to_vec();
-    for ((x, y), h) in sub.heights() {
-        penalty_diff += (new_diff[y][x] - h as isize).abs() - new_diff[y][x].abs();
-        new_diff[y][x] -= h as isize;
+#[cfg(test)]
+fn swap_test_config() -> (Vec<Vec<isize>>, Mountain) {
+    // input:
+    // 010...
+    // 121...
+    // 010...
+    // ......
+    //
+    // current mountains:
+    // 0010...
+    // 0121...
+    // 0010...
+    // .......
+    //
+    // diff:
+    // 0I10...
+    // II11...
+    // 0I10...
+    // .......
+    //
+    // penalty = 8
+    let mountain = Mountain { x: 2, y: 1, h: 2 };
+    let mut diff = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let diff_corner = vec![
+        vec![ 0, -1, 1, 0],
+        vec![-1, -1, 1, 1],
+        vec![ 0, -1, 1, 0],
+    ];
+    for (y, row) in diff_corner.into_iter().enumerate() {
+        for (x, value) in row.into_iter().enumerate() {
+            diff[y][x] = value;
+        }
     }
-    for ((x, y), h) in add.heights() {
-        penalty_diff += (new_diff[y][x] + h as isize).abs() - new_diff[y][x].abs();
-        new_diff[y][x] += h as isize;
+    (diff, mountain)
+}
+
+fn penalty_by_swap(diff: &[Vec<isize>], sub: &Mountain, add: &Mountain) -> isize {
+    let mut penalty = 0;
+    sub.for_each_cell(|(x, y), h| {
+        penalty += (diff[y][x] - h as isize).abs() - diff[y][x].abs();
+    });
+    add.for_each_cell(|(x, y), h| {
+        penalty += (diff[y][x] + h as isize).abs() - diff[y][x].abs();
+    });
+    penalty
+}
+
+#[cfg(test)]
+#[test]
+fn test_penalty_by_swap() {
+    let (diff, mountain) = swap_test_config();
+    // new mountain:
+    // 00010...
+    // 00121...
+    // 00010...
+    // ........
+    //
+    // next diff (I = -1, J = -2):
+    // 0I010...
+    // IJ021...
+    // 0I010...
+    // ........
+    //
+    // penalty = 10
+    let new_mountain = Mountain { x: 3, y: 1, h: 2 };
+    assert_eq!(penalty_by_swap(&diff, &mountain, &new_mountain), 2);
+}
+
+fn update_diff(diff: &mut [Vec<isize>], sub: &Mountain, add: &Mountain) {
+    sub.for_each_cell(|(x, y), h| {
+        diff[y][x] -= h as isize;
+    });
+    add.for_each_cell(|(x, y), h| {
+        diff[y][x] += h as isize;
+    });
+}
+
+#[cfg(test)]
+#[test]
+fn test_update_diff() {
+    let (diff, mountain) = swap_test_config();
+    // new mountain:
+    // 00010...
+    // 00121...
+    // 00010...
+    // ........
+    //
+    // next diff (I = -1, J = -2):
+    // 0I010...
+    // IJ021...
+    // 0I010...
+    // ........
+    let new_mountain = Mountain { x: 3, y: 1, h: 2 };
+    let mut next_diff_expected = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let next_diff_corner = vec![
+        vec![ 0, -1, 0, 1, 0],
+        vec![-1, -2, 0, 2, 1],
+        vec![ 0, -1, 0, 1, 0],
+    ];
+    for (y, row) in next_diff_corner.into_iter().enumerate() {
+        for (x, value) in row.into_iter().enumerate() {
+            next_diff_expected[y][x] = value;
+        }
     }
-    (penalty_diff, new_diff)
+    update_diff(&mut diff, &mountain, &new_mountain);
+    assert_eq!(diff, next_diff_expected);
 }
 
 
+#[cfg(test)]
 #[test]
 fn test_swapping_diff() {
     // input:
@@ -734,6 +826,7 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
     let mut diff = initial_diff(input, &mountains);
 
     let mut loop_count = 0;
+    let mut update_count = 0;
 
     loop {
         if Instant::now() > time_limit_tightend {
@@ -742,16 +835,17 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
 
         let i = rng.rand() as usize % MOUNTAIN_MAX_COUNT;
         let mountain = Mountain::random(&mut rng);
-        let (penalty_diff, new_diff) = swapping_diff(&diff, &mountains[i], &mountain);
-        if penalty_diff < 0 {
+        if penalty_by_swap(&diff, &mountains[i], &mountain) < 0 {
+            update_diff(&mut diff, &mountains[i], &mountain);
             mountains[i] = mountain;
-            diff = new_diff;
+            update_count += 1;
         }
 
         loop_count += 1;
     }
 
     dbg!(loop_count);
+    dbg!(update_count);
     mountains.into_iter().filter(|m| m.h > 0).collect()
 }
 
