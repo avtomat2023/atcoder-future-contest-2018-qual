@@ -610,14 +610,8 @@ impl Display for Mountain {
     }
 }
 
-fn perturb_num(pos: usize, max: usize, rng: &mut Xorshift) -> isize {
-    if pos == 0 {
-        1
-    } else if pos == max {
-        -1
-    } else {
-        (rng.rand() % 2) as isize * 2 - 1
-    }
+fn gen_perturbation(rng: &mut Xorshift) -> isize {
+    (rng.rand() & 2) as isize - 1
 }
 
 impl Mountain {
@@ -650,19 +644,40 @@ impl Mountain {
         }
     }
 
-    fn perturbation(&self, rng: &mut Xorshift) -> Perturbation {
+    fn perturbation(&self, rng: &mut Xorshift) -> Option<Perturbation> {
         match rng.rand() % 3 {
-            0 => Perturbation {
-                var: PerturbationVar::X,
-                delta: perturb_num(self.x, BOARD_WIDTH - 1, rng)
+            0 => {
+                let p = gen_perturbation(rng);
+                if self.x == 0 && p == -1 || self.x == BOARD_WIDTH - 1 && p == 1 {
+                    None
+                } else {
+                    Some(Perturbation {
+                        var: PerturbationVar::X,
+                        delta: p
+                    })
+                }
             },
-            1 => Perturbation {
-                var: PerturbationVar::Y,
-                delta: perturb_num(self.y, BOARD_WIDTH - 1, rng)
+            1 => {
+                let p = gen_perturbation(rng);
+                if self.y == 0 && p == -1 || self.y == BOARD_WIDTH - 1 && p == 1 {
+                    None
+                } else {
+                    Some(Perturbation {
+                        var: PerturbationVar::Y,
+                        delta: p
+                    })
+                }
             },
-            _ => Perturbation {
-                var: PerturbationVar::H,
-                delta: perturb_num(self.h, BOARD_WIDTH, rng)
+            _ => {
+                let p = gen_perturbation(rng);
+                if self.h == 0 && p == -1 || self.h == MAX_HEIGHT && p == 1 {
+                    None
+                } else {
+                    Some(Perturbation {
+                        var: PerturbationVar::H,
+                        delta: p
+                    })
+                }
             }
         }
     }
@@ -1440,6 +1455,16 @@ fn test_update_diff() {
     assert_eq!(diff1, diff1_expected);
 }
 
+fn next_perturbation(
+    mountains: &[Mountain], rng: &mut Xorshift
+) -> (usize, Perturbation) {
+    let i = rng.rand() as usize % mountains.len();
+    match mountains[i].perturbation(rng) {
+        None => next_perturbation(mountains, rng),
+        Some(perturbation) => (i, perturbation)
+    }
+}
+
 fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
     let time_limit_tightend: Instant = time_limit - Duration::from_millis(10);
     let mut rng = Xorshift::new();
@@ -1457,9 +1482,7 @@ fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
             break;
         }
 
-        let i = rng.rand() as usize % MOUNTAIN_MAX_COUNT;
-        let perturbation = mountains[i].perturbation(&mut rng);
-
+        let (i, perturbation) = next_perturbation(&mountains, &mut rng);
         if perturbing_diff(&diff, &mountains[i], perturbation) < 0 {
             update_diff(&mut diff, &mountains[i], perturbation);
             mountains[i].perturb(perturbation);
@@ -1493,8 +1516,7 @@ fn test_penalty_calculation() {
     let mut penalty = calc_penalty(&diff);
 
     for _ in 0..2000 {
-        let i = rng.rand() as usize % MOUNTAIN_MAX_COUNT;
-        let perturbation = mountains[i].perturbation(&mut rng);
+        let (i, perturbation) = next_perturbation(&mountains, &mut rng);
 
         let penalty_diff = perturbing_diff(&diff, &mountains[i], perturbation);
         update_diff(&mut diff, &mountains[i], perturbation);
