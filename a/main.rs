@@ -473,6 +473,8 @@ macro_rules! dbg {
     }};
 }
 
+use std::cmp::min;
+
 #[derive(Debug)]
 pub struct Xorshift {
     seed: u64,
@@ -513,9 +515,9 @@ impl Xorshift {
 
 use std::fmt::{self, Display, Formatter};
 use std::time::{Instant, Duration};
-use std::cmp;
 
 const BOARD_WIDTH: usize = 100;
+const MAX_HEIGHT: usize = 100;
 const MOUNTAIN_MAX_COUNT: usize = 1000;
 
 struct Mountain {
@@ -531,6 +533,14 @@ impl Display for Mountain {
 }
 
 impl Mountain {
+    fn random(rng: &mut Xorshift) -> Mountain {
+        Mountain {
+            x: rng.rand() as usize % BOARD_WIDTH,
+            y: rng.rand() as usize % BOARD_WIDTH,
+            h: rng.rand() as usize % MAX_HEIGHT + 1
+        }
+    }
+
     fn heights(&self) -> Vec<((usize, usize), usize)> {
         let mut res = Vec::with_capacity(2 * self.h * self.h - 1);
 
@@ -553,14 +563,14 @@ impl Mountain {
 fn triangle(h: usize, center: usize, left: usize, right: usize) -> Vec<usize> {
     let mut res = Vec::with_capacity(2 * h as usize - 1);
 
-    let l_width = cmp::min(h - 1, center - left);
+    let l_width = min(h - 1, center - left);
     for i in (1..h).skip((h-1) - l_width) {
         res.push(i);
     }
 
     res.push(h);
 
-    let r_width = cmp::min(h - 1, right - center);
+    let r_width = min(h - 1, right - center);
     for i in (1..h).skip((h-1) - r_width).rev() {
         res.push(i);
     }
@@ -568,6 +578,7 @@ fn triangle(h: usize, center: usize, left: usize, right: usize) -> Vec<usize> {
     res
 }
 
+#[cfg(test)]
 #[test]
 fn test_triangle() {
     assert_eq!(triangle(2, 1, 0, 10), vec![1, 2, 1]);
@@ -592,6 +603,7 @@ fn initial_diff(input: &[Vec<usize>], mountains: &[Mountain]) -> Vec<Vec<isize>>
     }).collect()
 }
 
+#[cfg(test)]
 #[test]
 fn test_initial_diff() {
     // input:
@@ -717,7 +729,7 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
     let mut rng = Xorshift::new();
 
     let mut mountains: Vec<Mountain> = (0..MOUNTAIN_MAX_COUNT)
-        .map(|_| gen_random(&mut rng))
+        .map(|_| Mountain::random(&mut rng))
         .collect();
     let mut diff = initial_diff(input, &mountains);
 
@@ -729,7 +741,7 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
         }
 
         let i = rng.rand() as usize % MOUNTAIN_MAX_COUNT;
-        let mountain = gen_random(&mut rng);
+        let mountain = Mountain::random(&mut rng);
         let (penalty_diff, new_diff) = swapping_diff(&diff, &mountains[i], &mountain);
         if penalty_diff < 0 {
             mountains[i] = mountain;
@@ -740,15 +752,7 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
     }
 
     dbg!(loop_count);
-    mountains
-}
-
-fn gen_random(rng: &mut Xorshift) -> Mountain {
-    Mountain {
-        x: rng.rand() as usize % BOARD_WIDTH,
-        y: rng.rand() as usize % BOARD_WIDTH,
-        h: rng.rand() as usize % BOARD_WIDTH + 1
-    }
+    mountains.into_iter().filter(|m| m.h > 0).collect()
 }
 
 fn main() {
