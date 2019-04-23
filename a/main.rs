@@ -1376,6 +1376,7 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
     let mut diff = initial_diff(input, &mountains);
 
     let mut loop_count = 0;
+    let mut update_count = 0;
 
     loop {
         if Instant::now() > time_limit_tightend {
@@ -1388,12 +1389,14 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
         if perturbing_diff(&diff, &mountains[i], perturbation) < 0 {
             update_diff(&mut diff, &mountains[i], perturbation);
             mountains[i].perturb(perturbation);
+            update_count += 1;
         }
 
         loop_count += 1;
     }
 
     dbg!(loop_count);
+    dbg!(update_count);
     mountains.into_iter().filter(|m| m.h > 0).collect()
 }
 
