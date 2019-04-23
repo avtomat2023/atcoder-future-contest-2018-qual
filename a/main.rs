@@ -545,6 +545,10 @@ impl Mountain {
     where
         F: FnMut((usize, usize), usize)
     {
+        if self.h == 0 {
+            return;
+        }
+
         let ty = triangle(self.h, self.y, 0, BOARD_WIDTH-1);
         let iter_y = (self.y.saturating_sub(self.h-1) ..)
             .zip(ty.into_iter());
@@ -560,6 +564,10 @@ impl Mountain {
 }
 
 fn triangle(h: usize, center: usize, left: usize, right: usize) -> Vec<usize> {
+    if h == 0 {
+        return Vec::new();
+    }
+
     let mut res = Vec::with_capacity(2 * h as usize - 1);
 
     let l_width = min(h - 1, center - left);
