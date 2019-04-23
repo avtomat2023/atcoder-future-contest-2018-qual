@@ -515,7 +515,11 @@ impl Xorshift {
 
 use std::fmt::{self, Display, Formatter};
 use std::time::{Instant, Duration};
-use std::cmp;
+use std::ops::{Index, IndexMut};
+use std::slice;
+use std::default::Default;
+use std::vec;
+use std::iter::FromIterator;
 
 const BOARD_WIDTH: usize = 100;
 const MAX_HEIGHT: usize = 100;
@@ -530,7 +534,70 @@ struct Perturbation {
     delta: isize
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Board<T> {
+    cells: Vec<T>
+}
+
+impl<T> Index<usize> for Board<T> {
+    type Output = [T];
+
+    fn index(&self, index: usize) -> &[T] {
+        debug_assert!(index < BOARD_WIDTH);
+        &self.cells[BOARD_WIDTH * index .. BOARD_WIDTH * (index+1)]
+    }
+}
+
+impl<T> IndexMut<usize> for Board<T> {
+    fn index_mut(&mut self, index: usize) -> &mut [T] {
+        &mut self.cells[BOARD_WIDTH * index .. BOARD_WIDTH * (index+1)]
+    }
+}
+
+impl<T> IntoIterator for Board<T> {
+    type Item = T;
+    type IntoIter = vec::IntoIter<T>;
+
+    fn into_iter(self) -> vec::IntoIter<T> {
+        self.cells.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Board<T> {
+    type Item = &'a T;
+    type IntoIter = slice::Iter<'a, T>;
+
+    fn into_iter(self) -> slice::Iter<'a, T> {
+        self.iter()
+    }
+}
+
+impl<T> FromIterator<T> for Board<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Board<T> {
+        Board::from_vec(iter.into_iter().collect())
+    }
+}
+
+impl<T> Board<T> {
+    fn len() -> usize {
+        BOARD_WIDTH * BOARD_WIDTH
+    }
+
+    fn new() -> Board<T> where T: Default + Clone {
+        Board { cells: vec![T::default(); Board::<T>::len()] }
+    }
+
+    fn from_vec(v: Vec<T>) -> Board<T> {
+        debug_assert!(v.len() == Board::<T>::len());
+        Board { cells: v }
+    }
+
+    fn iter(&self) -> slice::Iter<T> {
+        self.cells.iter()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Mountain {
     x: usize,
     y: usize,
@@ -562,8 +629,13 @@ impl Mountain {
         }
     }
 
-    fn heights(&self) -> Vec<((usize, usize), usize)> {
-        let mut res = Vec::with_capacity(2 * self.h * self.h - 1);
+    fn for_each_cell<F>(&self, mut f: F)
+    where
+        F: FnMut((usize, usize), usize)
+    {
+        if self.h == 0 {
+            return;
+        }
 
         let ty = triangle(self.h, self.y, 0, BOARD_WIDTH-1);
         let iter_y = (self.y.saturating_sub(self.h-1) ..)
@@ -573,11 +645,9 @@ impl Mountain {
             let iter_x = (self.x.saturating_sub(hy-1)..)
                 .zip(tx.into_iter());
             for (x, h) in iter_x {
-                res.push(((x, y), h));
+                f((x, y), h);
             }
         }
-
-        res
     }
 
     fn perturbation(&self, rng: &mut Xorshift) -> Perturbation {
@@ -607,16 +677,18 @@ impl Mountain {
 }
 
 fn triangle(h: usize, center: usize, left: usize, right: usize) -> Vec<usize> {
+    debug_assert!(h > 0);
+
     let mut res = Vec::with_capacity(2 * h as usize - 1);
 
-    let l_width = cmp::min(h - 1, center - left);
+    let l_width = min(h - 1, center - left);
     for i in (1..h).skip((h-1) - l_width) {
         res.push(i);
     }
 
     res.push(h);
 
-    let r_width = cmp::min(h - 1, right - center);
+    let r_width = min(h - 1, right - center);
     for i in (1..h).skip((h-1) - r_width).rev() {
         res.push(i);
     }
@@ -634,30 +706,28 @@ fn test_triangle() {
     assert_eq!(triangle(3, 9, 0, 10), vec![1, 2, 3, 2]);
 }
 
-fn initial_diff(input: &[Vec<usize>], mountains: &[Mountain]) -> Vec<Vec<isize>> {
-    let mut board = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+fn calc_diff(input: &Board<usize>, mountains: &[Mountain]) -> Board<isize> {
+    let mut board = Board::<usize>::new();
     for m in mountains {
-        for ((x, y), h) in m.heights() {
+        m.for_each_cell(|(x, y), h| {
             board[y][x] += h;
-        }
+        });
     }
 
-    board.into_iter().zip(input).map(|(row_b, row_i)| {
-        row_b.into_iter().zip(row_i).map(|(cell_b, cell_i)| {
-            cell_b as isize - *cell_i as isize
-        }).collect()
+    board.into_iter().zip(input).map(|(cell_b, &cell_i)| {
+        cell_b as isize - cell_i as isize
     }).collect()
 }
 
 #[cfg(test)]
 #[test]
-fn test_initial_diff() {
+fn test_calc_diff() {
     // input:
     // 010...
     // 121...
     // 010...
     // ......
-    let mut input = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let mut input = Board::new();
     input[0][1] = 1;
     input[1][0] = 1;
     input[1][1] = 2;
@@ -676,8 +746,7 @@ fn test_initial_diff() {
     // II11...
     // 0I10...
     // .......
-    let diff = initial_diff(&input, &mountains);
-    println!("{:?}", &diff[..5]);
+    let diff = calc_diff(&input, &mountains);
 
     assert_eq!(diff[0][0], 0);
     assert_eq!(diff[0][1], -1);
@@ -1009,7 +1078,7 @@ fn test_for_diamond() {
     ]);
 }
 
-fn perturbing_diff(diff: &[Vec<isize>], m: &Mountain, p: Perturbation) -> isize {
+fn perturbing_diff(diff: &Board<isize>, m: &Mountain, p: Perturbation) -> isize {
     let mut penalty_diff = 0;
     match p.var {
         PerturbationVar::X => {
@@ -1058,7 +1127,12 @@ fn perturbing_diff(diff: &[Vec<isize>], m: &Mountain, p: Perturbation) -> isize 
 }
 
 #[cfg(test)]
-fn perturbing_diff_test_config() -> (Vec<Vec<isize>>, Mountain) {
+fn calc_penalty(diff: &Board<isize>) -> usize {
+    diff.iter().map(|&d| d.abs() as usize).sum()
+}
+
+#[cfg(test)]
+fn perturbing_diff_test_config() -> (Board<isize>, Mountain) {
     // input:
     // 010...
     // 121...
@@ -1079,7 +1153,7 @@ fn perturbing_diff_test_config() -> (Vec<Vec<isize>>, Mountain) {
     //
     // penalty = 8
     let mountain = Mountain { x: 2, y: 1, h: 2 };
-    let mut diff = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let mut diff = Board::new();
     let diff_corner = vec![
         vec![ 0, -1, 1, 0],
         vec![-1, -1, 1, 1],
@@ -1259,7 +1333,7 @@ fn test_perturbing_diff_decrease_h() {
     assert_eq!(perturbing_diff(&diff, &mountain, p), -3);
 }
 
-fn update_diff(diff: &mut [Vec<isize>], m: &Mountain, p: Perturbation) {
+fn update_diff(diff: &mut Board<isize>, m: &Mountain, p: Perturbation) {
     match p.var {
         PerturbationVar::X => {
             let ((dx_l, dx_r), (delta_l, delta_r)) = if p.delta > 0 {
@@ -1322,7 +1396,7 @@ fn test_update_diff() {
     //
     // penalty = 8
     let mountain = Mountain { x: 2, y: 1, h: 2 };
-    let mut diff = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let mut diff = Board::new();
     let diff_corner = vec![
         vec![ 0, -1, 1, 0],
         vec![-1, -1, 1, 1],
@@ -1352,7 +1426,7 @@ fn test_update_diff() {
     let p1 = Perturbation { var: PerturbationVar::X, delta: 1 };
     let mut diff1 = diff.clone();
     update_diff(&mut diff1, &mountain, p1);
-    let mut diff1_expected = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let mut diff1_expected = Board::new();
     let diff1_corner = vec![
         vec![ 0, -1, 0, 1, 0],
         vec![-1, -2, 0, 2, 1],
@@ -1366,14 +1440,14 @@ fn test_update_diff() {
     assert_eq!(diff1, diff1_expected);
 }
 
-fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
+fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
     let time_limit_tightend: Instant = time_limit - Duration::from_millis(10);
     let mut rng = Xorshift::new();
 
     let mut mountains: Vec<Mountain> = (0..MOUNTAIN_MAX_COUNT)
         .map(|_| Mountain::random(&mut rng))
         .collect();
-    let mut diff = initial_diff(input, &mountains);
+    let mut diff = calc_diff(input, &mountains);
 
     let mut loop_count = 0;
     let mut update_count = 0;
@@ -1400,10 +1474,42 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
     mountains.into_iter().filter(|m| m.h > 0).collect()
 }
 
+#[cfg(test)]
+#[test]
+fn test_penalty_calculation() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut rng = Xorshift::with_seed(seed);
+    let input = vec![rng.rand() as usize % MAX_HEIGHT + 1; Board::<usize>::len()]
+        .into_iter().collect();
+    let mut mountains: Vec<Mountain> = (0..MOUNTAIN_MAX_COUNT)
+        .map(|_| Mountain::random(&mut rng))
+        .collect();
+    let mut diff = calc_diff(&input, &mountains);
+    let mut penalty = calc_penalty(&diff);
+
+    for _ in 0..2000 {
+        let i = rng.rand() as usize % MOUNTAIN_MAX_COUNT;
+        let perturbation = mountains[i].perturbation(&mut rng);
+
+        let penalty_diff = perturbing_diff(&diff, &mountains[i], perturbation);
+        update_diff(&mut diff, &mountains[i], perturbation);
+        mountains[i].perturb(perturbation);
+        penalty = (penalty as isize + penalty_diff) as usize;
+    }
+
+    assert_eq!(diff, calc_diff(&input, &mountains));
+    assert_eq!(penalty, calc_penalty(&diff));
+}
+
 fn main() {
     let start = Instant::now();
 
-    let input = readx::<Vec<usize>>();
+    let input = readx::<Vec<usize>>().into_iter().flatten().collect();
     let ans = solve(&input, start + Duration::from_millis(5995));
     with_stdout(|mut f| {
         writeln!(f, "{}", ans.len()).unwrap();
