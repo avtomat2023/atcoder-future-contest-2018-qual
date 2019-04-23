@@ -515,10 +515,78 @@ impl Xorshift {
 
 use std::fmt::{self, Display, Formatter};
 use std::time::{Instant, Duration};
+use std::ops::{Index, IndexMut};
+use std::slice;
+use std::default::Default;
+use std::vec;
+use std::iter::FromIterator;
 
 const BOARD_WIDTH: usize = 100;
 const MAX_HEIGHT: usize = 100;
 const MOUNTAIN_MAX_COUNT: usize = 1000;
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Board<T> {
+    cells: Vec<T>
+}
+
+impl<T> Index<usize> for Board<T> {
+    type Output = [T];
+
+    fn index(&self, index: usize) -> &[T] {
+        debug_assert!(index < BOARD_WIDTH);
+        &self.cells[BOARD_WIDTH * index .. BOARD_WIDTH * (index+1)]
+    }
+}
+
+impl<T> IndexMut<usize> for Board<T> {
+    fn index_mut(&mut self, index: usize) -> &mut [T] {
+        &mut self.cells[BOARD_WIDTH * index .. BOARD_WIDTH * (index+1)]
+    }
+}
+
+impl<T> IntoIterator for Board<T> {
+    type Item = T;
+    type IntoIter = vec::IntoIter<T>;
+
+    fn into_iter(self) -> vec::IntoIter<T> {
+        self.cells.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Board<T> {
+    type Item = &'a T;
+    type IntoIter = slice::Iter<'a, T>;
+
+    fn into_iter(self) -> slice::Iter<'a, T> {
+        self.iter()
+    }
+}
+
+impl<T> FromIterator<T> for Board<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Board<T> {
+        Board::from_vec(iter.into_iter().collect())
+    }
+}
+
+impl<T> Board<T> {
+    fn len() -> usize {
+        BOARD_WIDTH * BOARD_WIDTH
+    }
+
+    fn new() -> Board<T> where T: Default + Clone {
+        Board { cells: vec![T::default(); Board::<T>::len()] }
+    }
+
+    fn from_vec(v: Vec<T>) -> Board<T> {
+        debug_assert!(v.len() == Board::<T>::len());
+        Board { cells: v }
+    }
+
+    fn iter(&self) -> slice::Iter<T> {
+        self.cells.iter()
+    }
+}
 
 #[derive(Debug)]
 struct Mountain {
@@ -596,18 +664,16 @@ fn test_triangle() {
     assert_eq!(triangle(3, 9, 0, 10), vec![1, 2, 3, 2]);
 }
 
-fn calc_diff(input: &[Vec<usize>], mountains: &[Mountain]) -> Vec<Vec<isize>> {
-    let mut board = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+fn calc_diff(input: &Board<usize>, mountains: &[Mountain]) -> Board<isize> {
+    let mut board = Board::<usize>::new();
     for m in mountains {
         m.for_each_cell(|(x, y), h| {
             board[y][x] += h;
         });
     }
 
-    board.into_iter().zip(input).map(|(row_b, row_i)| {
-        row_b.into_iter().zip(row_i).map(|(cell_b, cell_i)| {
-            cell_b as isize - *cell_i as isize
-        }).collect()
+    board.into_iter().zip(input).map(|(cell_b, &cell_i)| {
+        cell_b as isize - cell_i as isize
     }).collect()
 }
 
@@ -619,7 +685,7 @@ fn test_calc_diff() {
     // 121...
     // 010...
     // ......
-    let mut input = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let mut input = Board::new();
     input[0][1] = 1;
     input[1][0] = 1;
     input[1][1] = 2;
@@ -639,7 +705,6 @@ fn test_calc_diff() {
     // 0I10...
     // .......
     let diff = calc_diff(&input, &mountains);
-    println!("{:?}", &diff[..5]);
 
     assert_eq!(diff[0][0], 0);
     assert_eq!(diff[0][1], -1);
@@ -657,14 +722,12 @@ fn test_calc_diff() {
     assert_eq!(diff[2][3], 0);
 }
 
-fn calc_penalty(diff: &[Vec<isize>]) -> usize {
-    diff.iter().map(|row| {
-        row.iter().map(|d| d.abs() as usize).sum::<usize>()
-    }).sum()
+fn calc_penalty(diff: &Board<isize>) -> usize {
+    diff.iter().map(|&d| d.abs() as usize).sum()
 }
 
 #[cfg(test)]
-fn swap_test_config() -> (Vec<Vec<isize>>, Mountain) {
+fn swap_test_config() -> (Board<isize>, Mountain) {
     // input:
     // 010...
     // 121...
@@ -685,7 +748,7 @@ fn swap_test_config() -> (Vec<Vec<isize>>, Mountain) {
     //
     // penalty = 8
     let mountain = Mountain { x: 2, y: 1, h: 2 };
-    let mut diff = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let mut diff = Board::new();
     let diff_corner = vec![
         vec![ 0, -1, 1, 0],
         vec![-1, -1, 1, 1],
@@ -699,9 +762,9 @@ fn swap_test_config() -> (Vec<Vec<isize>>, Mountain) {
     (diff, mountain)
 }
 
-fn penalty_by_swap(diff: &[Vec<isize>], sub: &Mountain, add: &Mountain) -> isize {
+fn penalty_by_swap(diff: &Board<isize>, sub: &Mountain, add: &Mountain) -> isize {
     let mut penalty = 0;
-    let mut tmp_diff: Vec<Vec<isize>> = diff.iter().map(|v| v.clone()).collect(); // Seems very slow
+    let mut tmp_diff: Board<isize> = diff.iter().map(|v| v.clone()).collect(); // Seems very slow
     sub.for_each_cell(|(x, y), h| {
         penalty += (diff[y][x] - h as isize).abs() - diff[y][x].abs();
         tmp_diff[y][x] -= h as isize;
@@ -733,7 +796,7 @@ fn test_penalty_by_swap() {
     assert_eq!(penalty_by_swap(&diff, &mountain, &new_mountain), 2);
 }
 
-fn update_diff(diff: &mut [Vec<isize>], sub: &Mountain, add: &Mountain) {
+fn update_diff(diff: &mut Board<isize>, sub: &Mountain, add: &Mountain) {
     sub.for_each_cell(|(x, y), h| {
         diff[y][x] -= h as isize;
     });
@@ -758,7 +821,7 @@ fn test_update_diff() {
     // 0I010...
     // ........
     let new_mountain = Mountain { x: 3, y: 1, h: 2 };
-    let mut next_diff_expected = vec![vec![0; BOARD_WIDTH]; BOARD_WIDTH];
+    let mut next_diff_expected = Board::new();
     let next_diff_corner = vec![
         vec![ 0, -1, 0, 1, 0],
         vec![-1, -2, 0, 2, 1],
@@ -773,7 +836,7 @@ fn test_update_diff() {
     assert_eq!(diff, next_diff_expected);
 }
 
-fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
+fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
     let time_limit_tightend: Instant = time_limit - Duration::from_millis(10);
     let mut rng = Xorshift::new();
 
@@ -809,7 +872,8 @@ fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
 #[test]
 fn test_penalty_calculation() {
     let mut rng = Xorshift::new();
-    let input = vec![vec![rng.rand() as usize % MAX_HEIGHT + 1; BOARD_WIDTH]; BOARD_WIDTH];
+    let input = vec![rng.rand() as usize % MAX_HEIGHT + 1; Board::<usize>::len()]
+        .into_iter().collect();
     let mut mountains: Vec<Mountain> = (0..MOUNTAIN_MAX_COUNT)
         .map(|_| Mountain::random(&mut rng))
         .collect();
@@ -834,7 +898,7 @@ fn test_penalty_calculation() {
 fn main() {
     let start = Instant::now();
 
-    let input = readx::<Vec<usize>>();
+    let input = Board::from_vec(readx::<Vec<usize>>().into_iter().flatten().collect());
     let ans = solve(&input, start + Duration::from_millis(5995));
     with_stdout(|mut f| {
         writeln!(f, "{}", ans.len()).unwrap();
