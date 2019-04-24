@@ -456,6 +456,46 @@ pub trait PrimitiveUnsigned {
 macro_rules ! impl_primitive_unsigned { ( $ ( $ t : ty ) * ) => { $ ( impl PrimitiveUnsigned for $ t { fn ceil_div ( self , rhs : $ t ) -> $ t { ( self + rhs - 1 ) / rhs } fn round_div ( self , rhs : $ t ) -> $ t { ( self + rhs / 2 ) / rhs } } ) * } }
 impl_primitive_unsigned ! ( u8 u16 u32 u64 usize ) ;
 
+use std::cmp::{Ord, Ordering};
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Reverse<T>(pub T);
+impl<T: PartialOrd> PartialOrd for Reverse<T> {
+    fn partial_cmp(&self, other: &Reverse<T>) -> Option<Ordering> {
+        other.0.partial_cmp(&self.0)
+    }
+}
+impl<T: Ord> Ord for Reverse<T> {
+    fn cmp(&self, other: &Reverse<T>) -> Ordering {
+        other.0.cmp(&self.0)
+    }
+}
+pub trait SortDesc<T> {
+    fn sort_desc(&mut self)
+    where
+        T: Ord;
+    fn sort_desc_by_key<K: Ord, F: FnMut(&T) -> K>(&mut self, f: F);
+}
+impl<T> SortDesc<T> for [T] {
+    fn sort_desc(&mut self)
+    where
+        T: Ord,
+    {
+        self.sort();
+        self.reverse();
+    }
+    fn sort_desc_by_key<K: Ord, F: FnMut(&T) -> K>(&mut self, mut f: F) {
+        self.sort_by_key(|x| Reverse(f(x)));
+    }
+}
+#[derive(PartialEq, PartialOrd)]
+pub struct Total<T: PartialOrd + PartialEq>(pub T);
+impl<T: PartialOrd + PartialEq> Eq for Total<T> {}
+impl<T: PartialOrd + PartialEq> Ord for Total<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
 #[macro_export]
 macro_rules! dbg {
     ( $ e : expr ) => {{
@@ -513,10 +553,86 @@ impl Xorshift {
 
 use std::fmt::{self, Display, Formatter};
 use std::time::{Instant, Duration};
-use std::cmp;
+use std::cmp::min;
+use std::iter::FromIterator;
+use std::ops::{Index, IndexMut};
+use std::vec;
+use std::slice;
 
-const N: usize = 100;
+const BOARD_WIDTH: usize = 100;
+const MAX_HEIGHT: usize = 100;
+const MOUNTAIN_MAX_COUNT: usize = 1000;
 
+// Parameters
+const POPULATION_SIZE: usize = 20;
+const ELITE_SIZE: usize = 5;
+const CROSSOVER_SIZE: usize = 15;
+const MUTATION_SIZE: usize = 0;
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Board<T> {
+    cells: Vec<T>
+}
+
+impl<T> Index<usize> for Board<T> {
+    type Output = [T];
+
+    fn index(&self, index: usize) -> &[T] {
+        debug_assert!(index < BOARD_WIDTH);
+        &self.cells[BOARD_WIDTH * index .. BOARD_WIDTH * (index+1)]
+    }
+}
+
+impl<T> IndexMut<usize> for Board<T> {
+    fn index_mut(&mut self, index: usize) -> &mut [T] {
+        &mut self.cells[BOARD_WIDTH * index .. BOARD_WIDTH * (index+1)]
+    }
+}
+
+impl<T> IntoIterator for Board<T> {
+    type Item = T;
+    type IntoIter = vec::IntoIter<T>;
+
+    fn into_iter(self) -> vec::IntoIter<T> {
+        self.cells.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Board<T> {
+    type Item = &'a T;
+    type IntoIter = slice::Iter<'a, T>;
+
+    fn into_iter(self) -> slice::Iter<'a, T> {
+        self.iter()
+    }
+}
+
+impl<T> FromIterator<T> for Board<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Board<T> {
+        Board::from_vec(iter.into_iter().collect())
+    }
+}
+
+impl<T> Board<T> {
+    fn len() -> usize {
+        BOARD_WIDTH * BOARD_WIDTH
+    }
+
+    fn new() -> Board<T> where T: Default + Clone {
+        Board { cells: vec![T::default(); Board::<T>::len()] }
+    }
+
+    fn from_vec(v: Vec<T>) -> Board<T> {
+        debug_assert!(v.len() == Board::<T>::len());
+        Board { cells: v }
+    }
+
+    fn iter(&self) -> slice::Iter<T> {
+        self.cells.iter()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Mountain {
     x: usize,
     y: usize,
@@ -529,17 +645,52 @@ impl Display for Mountain {
     }
 }
 
+impl Mountain {
+    fn random(rng: &mut Xorshift) -> Mountain {
+        Mountain {
+            x: rng.rand() as usize % BOARD_WIDTH,
+            y: rng.rand() as usize % BOARD_WIDTH,
+            h: rng.rand() as usize % MAX_HEIGHT,
+        }
+    }
+
+    fn for_each_cell<F>(&self, mut f: F)
+    where
+        F: FnMut((usize, usize), usize)
+    {
+        if self.h == 0 {
+            return;
+        }
+
+        let ty = triangle(self.h, self.y, 0, BOARD_WIDTH-1);
+        let iter_y = (self.y.saturating_sub(self.h-1) ..)
+            .zip(ty.into_iter());
+        for (y, hy) in iter_y {
+            let tx = triangle(hy, self.x, 0, BOARD_WIDTH-1);
+            let iter_x = (self.x.saturating_sub(hy-1)..)
+                .zip(tx.into_iter());
+            for (x, h) in iter_x {
+                f((x, y), h);
+            }
+        }
+    }
+}
+
 fn triangle(h: usize, center: usize, left: usize, right: usize) -> Vec<usize> {
+    if h == 0 {
+        return Vec::new();
+    }
+
     let mut res = Vec::with_capacity(2 * h as usize - 1);
 
-    let l_width = cmp::min(h - 1, (center - left).saturating_sub(1));
+    let l_width = min(h - 1, center - left);
     for i in (1..h).skip((h-1) - l_width) {
         res.push(i);
     }
 
     res.push(h);
 
-    let r_width = cmp::min(h - 1, (right - center).saturating_sub(1));
+    let r_width = min(h - 1, right - center);
     for i in (1..h).skip((h-1) - r_width).rev() {
         res.push(i);
     }
@@ -547,68 +698,83 @@ fn triangle(h: usize, center: usize, left: usize, right: usize) -> Vec<usize> {
     res
 }
 
-fn eval(input: &[Vec<usize>], ms: &[Mountain], time_limit: Instant) -> Option<u64> {
-    let time_limit_tightened = time_limit - Duration::from_millis(1);
-    let mut table = vec![vec![0; N]; N];
+#[cfg(test)]
+#[test]
+fn test_triangle() {
+    assert_eq!(triangle(2, 1, 0, 10), vec![1, 2, 1]);
+    assert_eq!(triangle(3, 1, 0, 10), vec![2, 3, 2, 1]);
+
+    assert_eq!(triangle(2, 9, 0, 10), vec![1, 2, 1]);
+    assert_eq!(triangle(3, 9, 0, 10), vec![1, 2, 3, 2]);
+}
+
+fn calc_penalty(input: &Board<usize>, ms: &[Mountain]) -> usize {
+    let mut diff: Board<isize> = input.iter().map(|&h| h as isize).collect();
+
     for m in ms {
-        let ty = triangle(m.h, m.y, 0, N-1);
-        let iter_y = (m.y.saturating_sub(m.h-1) ..)
-            .zip(ty.into_iter());
-        for (y, hy) in iter_y {
-            let tx = triangle(hy, m.x, 0, N-1);
-            let iter_x = (m.x.saturating_sub(hy-1)..)
-                .zip(tx.into_iter());
-            for (x, h) in iter_x {
-                table[y][x] += h;
-            }
-        }
-
-        if Instant::now() > time_limit_tightened {
-            return None;
-        }
+        m.for_each_cell(|(x,y), h| {
+            diff[y][x] -= h as isize;
+        });
     }
-
-    Some(input.iter().flatten().zip(table.into_iter().flatten())
-         .map(|(&a, b)| a.abs_diff(b))
-         .sum::<usize>() as u64)
+    diff.into_iter().map(|d| d.abs() as usize).sum()
 }
 
-fn solve(input: &[Vec<usize>], time_limit: Instant) -> Vec<Mountain> {
-    let time_limit_tightend: Instant = time_limit - Duration::from_millis(1);
+fn select_elites(mut population: Vec<Vec<Mountain>>, input: &Board<usize>) -> Vec<Vec<Mountain>> {
+    population.sort_by_key(|ms| calc_penalty(input, ms));
+    population[..ELITE_SIZE].to_vec()
+}
+
+fn make_crossover(elites: &[Vec<Mountain>], rng: &mut Xorshift) -> Vec<Vec<Mountain>> {
+    (0..CROSSOVER_SIZE).map(|_| {
+        let e1 = &elites[rng.rand() as usize % elites.len()];
+        let e2 = &elites[rng.rand() as usize % elites.len()];
+        let mut mountains = Vec::new();
+        for _ in 0..MOUNTAIN_MAX_COUNT/2 {
+            mountains.push(e1[rng.rand() as usize % e1.len()].clone());
+        }
+        for _ in MOUNTAIN_MAX_COUNT/2..MOUNTAIN_MAX_COUNT {
+            mountains.push(e2[rng.rand() as usize % e2.len()].clone());
+        }
+        mountains
+    }).collect()
+}
+
+fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
+    let time_limit_tightend: Instant = time_limit - Duration::from_millis(100);
     let mut rng = Xorshift::new();
-
-    let mut res: Vec<Mountain> = (0..1000).map(|_| gen_random(&mut rng))
-        .collect();
-    let mut score = eval(input, &res, time_limit_tightend).unwrap();
-    loop {
-        let new_ans: Vec<Mountain> = (0..1000).map(|_| gen_random(&mut rng))
-            .collect();
-        match eval(input, &new_ans, time_limit_tightend) {
-            Some(new_score) => {
-                if new_score < score {
-                    res = new_ans;
-                    score = new_score;
-                }
-            },
-            None => break
+    let mut loop_count = 0;
+    let mut population = Vec::new();
+    for _ in 0..POPULATION_SIZE {
+        let mut ms = Vec::new();
+        for _ in 0..MOUNTAIN_MAX_COUNT {
+            ms.push(Mountain::random(&mut rng));
         }
+        population.push(ms);
     }
-    res
-}
 
-fn gen_random(rng: &mut Xorshift) -> Mountain {
-    Mountain {
-        x: rng.rand() as usize % N,
-        y: rng.rand() as usize % N,
-        h: rng.rand() as usize % N + 1
+    loop {
+        if Instant::now() > time_limit_tightend {
+            break;
+        }
+
+        let elites = select_elites(population, input);
+        population = elites.clone();
+        population.extend(make_crossover(&elites, &mut rng));
+        // TODO: make mutation
+
+        loop_count += 1;
     }
+
+    dbg!(loop_count);
+    let ms = population.into_iter().min_by_key(|ms| calc_penalty(input, ms)).unwrap();
+    ms.into_iter().filter(|m| m.h > 0).collect()
 }
 
 fn main() {
     let start = Instant::now();
 
-    let input = readx::<Vec<usize>>();
-    let ans = solve(&input, start + Duration::from_millis(5950));
+    let input: Board<usize> = readx::<Vec<usize>>().into_iter().flatten().collect();
+    let ans = solve(&input, start + Duration::from_millis(20_000));
     with_stdout(|mut f| {
         writeln!(f, "{}", ans.len()).unwrap();
         for m in ans {

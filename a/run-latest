@@ -1,0 +1,2 @@
+#!/bin/bash
+rustup run 1.15.1 rustc "$@" main.rs && ./main
