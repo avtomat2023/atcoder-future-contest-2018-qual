@@ -1492,7 +1492,8 @@ fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
         let elapsed_millis =
             (elapsed.as_secs() * 1000 +
              (elapsed.subsec_nanos() as u64) / 1_000_000) as f64;
-        let acceptance = (timeslice_millis - elapsed_millis) / timeslice_millis;
+        let elapsed_rate = elapsed_millis / timeslice_millis;
+        let acceptance = (-5.0 * elapsed_rate).exp();
         let (i, perturbation) = next_perturbation(&mountains, &mut rng);
         if perturbing_diff(&diff, &mountains[i], perturbation) < 0 ||
             rng.randf() <= acceptance
