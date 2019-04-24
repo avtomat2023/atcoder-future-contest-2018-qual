@@ -1466,7 +1466,12 @@ fn next_perturbation(
 }
 
 fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
+    let start_time = Instant::now();
     let time_limit_tightend: Instant = time_limit - Duration::from_millis(10);
+    let timeslice = time_limit_tightend.duration_since(start_time);
+    let timeslice_millis =
+        (timeslice.as_secs() * 1000 +
+         (timeslice.subsec_nanos() as u64) / 1_000_000) as f64;
     let mut rng = Xorshift::new();
 
     let mut mountains: Vec<Mountain> = (0..MOUNTAIN_MAX_COUNT)
@@ -1478,12 +1483,20 @@ fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
     let mut update_count = 0;
 
     loop {
-        if Instant::now() > time_limit_tightend {
+        let now = Instant::now();
+        if now > time_limit_tightend {
             break;
         }
 
+        let elapsed = now.duration_since(start_time);
+        let elapsed_millis =
+            (elapsed.as_secs() * 1000 +
+             (elapsed.subsec_nanos() as u64) / 1_000_000) as f64;
+        let acceptance = (timeslice_millis - elapsed_millis) / timeslice_millis;
         let (i, perturbation) = next_perturbation(&mountains, &mut rng);
-        if perturbing_diff(&diff, &mountains[i], perturbation) < 0 {
+        if perturbing_diff(&diff, &mountains[i], perturbation) < 0 ||
+            rng.randf() <= acceptance
+        {
             update_diff(&mut diff, &mountains[i], perturbation);
             mountains[i].perturb(perturbation);
             update_count += 1;
