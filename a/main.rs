@@ -525,6 +525,17 @@ const BOARD_WIDTH: usize = 100;
 const MAX_HEIGHT: usize = 100;
 const MOUNTAIN_MAX_COUNT: usize = 1000;
 
+// Parameters
+const CLIMBING_HIGHER_PENALTY_RATE: usize = 2;
+const MOUNTAIN_COUNT_FOR_CLIMBING: usize = 950;
+fn greedy_height(h: usize) -> usize {
+    if h <= 5 {
+        h
+    } else {
+        min(MAX_HEIGHT, 5 + (h-5) / 5)
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct Board<T> {
     cells: Vec<T>
@@ -737,12 +748,20 @@ fn test_calc_diff() {
     assert_eq!(diff[2][3], 0);
 }
 
-fn calc_penalty(diff: &Board<isize>) -> usize {
-    diff.iter().map(|&d| d.abs() as usize).sum()
+fn climbing_penalty(diff: isize) -> usize {
+    if diff <= 0 {
+        -diff as usize
+    } else {
+        diff as usize * CLIMBING_HIGHER_PENALTY_RATE
+    }
+}
+
+fn climbing_penalty_for_board(diff: &Board<isize>) -> usize {
+    diff.iter().map(|&d| climbing_penalty(d)).sum()
 }
 
 #[cfg(test)]
-fn swap_test_config() -> (Board<isize>, Mountain) {
+fn swap_test_config() -> (Board<isize>, Mountain, usize) {
     // input:
     // 010...
     // 121...
@@ -761,7 +780,7 @@ fn swap_test_config() -> (Board<isize>, Mountain) {
     // 0I10...
     // .......
     //
-    // penalty = 8
+    // climbing penalty = 4 + 4 * CLIMBING_HIGHER_PENALTY_RATE
     let mountain = Mountain { x: 2, y: 1, h: 2 };
     let mut diff = Board::new();
     let diff_corner = vec![
@@ -774,18 +793,22 @@ fn swap_test_config() -> (Board<isize>, Mountain) {
             diff[y][x] = value;
         }
     }
-    (diff, mountain)
+    (diff, mountain, 4 + 4 * CLIMBING_HIGHER_PENALTY_RATE)
 }
 
 fn penalty_by_swap(diff: &Board<isize>, sub: &Mountain, add: &Mountain) -> isize {
     let mut penalty = 0;
     let mut tmp_diff: Board<isize> = diff.iter().map(|v| v.clone()).collect(); // Seems very slow
     sub.for_each_cell(|(x, y), h| {
-        penalty += (diff[y][x] - h as isize).abs() - diff[y][x].abs();
+        penalty +=
+            climbing_penalty(diff[y][x] - h as isize) as isize -
+            climbing_penalty(diff[y][x]) as isize;
         tmp_diff[y][x] -= h as isize;
     });
     add.for_each_cell(|(x, y), h| {
-        penalty += (tmp_diff[y][x] + h as isize).abs() - tmp_diff[y][x].abs();
+        penalty +=
+            climbing_penalty(tmp_diff[y][x] + h as isize) as isize -
+            climbing_penalty(tmp_diff[y][x]) as isize;
     });
     penalty
 }
@@ -793,7 +816,7 @@ fn penalty_by_swap(diff: &Board<isize>, sub: &Mountain, add: &Mountain) -> isize
 #[cfg(test)]
 #[test]
 fn test_penalty_by_swap() {
-    let (diff, mountain) = swap_test_config();
+    let (diff, mountain, penalty) = swap_test_config();
     // new mountain:
     // 00010...
     // 00121...
@@ -806,9 +829,10 @@ fn test_penalty_by_swap() {
     // 0I010...
     // ........
     //
-    // penalty = 10
+    // penalty = 5 + 5 * CLIMBING_HIGHER_PENALTY_RATE
     let new_mountain = Mountain { x: 3, y: 1, h: 2 };
-    assert_eq!(penalty_by_swap(&diff, &mountain, &new_mountain), 2);
+    assert_eq!(penalty_by_swap(&diff, &mountain, &new_mountain),
+               (5 + 5 * CLIMBING_HIGHER_PENALTY_RATE) as isize - penalty as isize);
 }
 
 fn update_diff(diff: &mut Board<isize>, sub: &Mountain, add: &Mountain) {
@@ -823,7 +847,7 @@ fn update_diff(diff: &mut Board<isize>, sub: &Mountain, add: &Mountain) {
 #[cfg(test)]
 #[test]
 fn test_update_diff() {
-    let (mut diff, mountain) = swap_test_config();
+    let (mut diff, mountain, _) = swap_test_config();
     // new mountain:
     // 00010...
     // 00121...
@@ -851,11 +875,14 @@ fn test_update_diff() {
     assert_eq!(diff, next_diff_expected);
 }
 
-fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
+fn solve_hill_climbing(
+    input: &Board<usize>,
+    mountain_count: usize,
+    time_limit: Instant
+) -> (Vec<Mountain>, Board<isize>) {
     let time_limit_tightend: Instant = time_limit - Duration::from_millis(10);
     let mut rng = Xorshift::new();
-
-    let mut mountains: Vec<Mountain> = (0..MOUNTAIN_MAX_COUNT)
+    let mut mountains: Vec<Mountain> = (0..mountain_count)
         .map(|_| Mountain::random(&mut rng))
         .collect();
     let mut diff = calc_diff(input, &mountains);
@@ -868,7 +895,7 @@ fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
             break;
         }
 
-        let i = rng.rand() as usize % MOUNTAIN_MAX_COUNT;
+        let i = rng.rand() as usize % mountain_count;
         let mountain = mountains[i].perturb(&mut rng);
         if penalty_by_swap(&diff, &mountains[i], &mountain) < 0 {
             update_diff(&mut diff, &mountains[i], &mountain);
@@ -881,11 +908,11 @@ fn solve(input: &Board<usize>, time_limit: Instant) -> Vec<Mountain> {
 
     dbg!(loop_count);
     dbg!(update_count);
-    mountains.into_iter().filter(|m| m.h > 0).collect()
+    (mountains.into_iter().filter(|m| m.h > 0).collect(), diff)
 }
 
 #[test]
-fn test_penalty_calculation() {
+fn test_climbing_penalty_calculation() {
     let mut rng = Xorshift::new();
     let input = vec![rng.rand() as usize % MAX_HEIGHT + 1; Board::<usize>::len()]
         .into_iter().collect();
@@ -893,7 +920,7 @@ fn test_penalty_calculation() {
         .map(|_| Mountain::random(&mut rng))
         .collect();
     let mut diff = calc_diff(&input, &mountains);
-    let mut penalty = calc_penalty(&diff);
+    let mut penalty = climbing_penalty_for_board(&diff);
 
     for _ in 0..500 {
         let i = rng.rand() as usize % MOUNTAIN_MAX_COUNT;
@@ -907,17 +934,46 @@ fn test_penalty_calculation() {
     }
 
     assert_eq!(diff, calc_diff(&input, &mountains));
-    assert_eq!(penalty, calc_penalty(&diff));
+    assert_eq!(penalty, climbing_penalty_for_board(&diff));
+}
+
+fn solve_greedy(diff: &mut Board<isize>, mountain_count: usize) -> Vec<Mountain> {
+    let ans = (0..mountain_count).map(|_| {
+        let mut points = Vec::new();
+        for x in 0..BOARD_WIDTH {
+            for y in 0..BOARD_WIDTH {
+                points.push((x, y));
+            }
+        }
+
+        let ((x, y), depth) = points.into_iter().map(|(x, y)| {
+            ((x, y), min(0, diff[y][x]))
+        }).min_by_key(|&(_, depth)| depth).unwrap();
+        let h = greedy_height((-depth) as usize);
+        let m = Mountain { x: x, y: y, h: h };
+        m.for_each_cell(|(x, y), h| {
+            diff[y][x] += h as isize;
+        });
+        m
+    }).take_while(|m| m.h > 0).collect();
+    ans
 }
 
 fn main() {
     let start = Instant::now();
 
     let input = Board::from_vec(readx::<Vec<usize>>().into_iter().flatten().collect());
-    let ans = solve(&input, start + Duration::from_millis(5995));
+    let (mut mountains1, mut diff) = solve_hill_climbing(
+        &input,
+        MOUNTAIN_COUNT_FOR_CLIMBING,
+        start + Duration::from_millis(5900)
+    );
+    let mountains2 = solve_greedy(&mut diff, MOUNTAIN_MAX_COUNT - mountains1.len());
+    mountains1.extend(mountains2);
+
     with_stdout(|mut f| {
-        writeln!(f, "{}", ans.len()).unwrap();
-        for m in ans {
+        writeln!(f, "{}", mountains1.len()).unwrap();
+        for m in mountains1 {
             writeln!(f, "{}", m).unwrap();
         }
     });
